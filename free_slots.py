@@ -2,7 +2,7 @@
 """
 free_slots.py
 
-Find open time windows on the "Henry@imatest.com" Google Calendar over the next N days,
+Find open time windows on a Google Calendar over the next N days,
 excluding: (1) existing events, (2) 15 min before/after each event, (3) times before 08:30 MT
 on Mon/Tue/Thu/Fri, (4) times before 09:30 MT on Wed, (5) weekends, and (6) times after 17:00 MT.
 Results are translated to an attendee's timezone.
@@ -10,7 +10,7 @@ Results are translated to an attendee's timezone.
 Usage examples:
   python free_slots.py --gui
   python free_slots.py --attendee-tz "America/New_York"
-  python free_slots.py --attendee-tz "Europe/London" --days 7 --calendar-id "Henry@imatest.com"
+  python free_slots.py --attendee-tz "Europe/London" --days 7 --calendar-id "user@example.com"
   python free_slots.py --attendee-tz "America/Los_Angeles" --slot-min 30 --output json
 
 Requires Python 3.9+ and Google Calendar API credentials (credentials.json).
@@ -20,6 +20,7 @@ import argparse
 import datetime as dt
 import json
 import sys
+import os
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
@@ -38,7 +39,43 @@ from google.auth.transport.requests import Request
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 MOUNTAIN_TZ = ZoneInfo("America/Denver")
-DEFAULT_CALENDAR_ID = "Henry@imatest.com"
+DEFAULT_CALENDAR_ID = "primary"  # Use 'primary' as default instead of specific email
+CONFIG_FILE = "config.json"
+
+
+def load_config() -> dict:
+    """Load configuration from config.json file."""
+    default_config = {
+        "calendar_id": DEFAULT_CALENDAR_ID,
+        "attendee_tz": "America/New_York",
+        "days": 7,
+        "slot_min": 0,
+        "output": "text",
+        "time_format": "auto"
+    }
+    
+    if not os.path.exists(CONFIG_FILE):
+        return default_config
+    
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            config = json.load(f)
+        # Merge with defaults to handle missing keys
+        for key, value in default_config.items():
+            if key not in config:
+                config[key] = value
+        return config
+    except (json.JSONDecodeError, IOError):
+        return default_config
+
+
+def save_config(config: dict) -> None:
+    """Save configuration to config.json file."""
+    try:
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(config, f, indent=2)
+    except IOError:
+        pass  # Silently fail if can't save config
 
 
 @dataclass
@@ -378,15 +415,18 @@ def launch_gui():
         "Australia/Sydney","Australia/Melbourne","Australia/Perth","Pacific/Auckland"
     ])
 
+    # Load saved configuration
+    config = load_config()
+
     root = tk.Tk()
     root.title("Free Slots Finder")
 
-    tz_var = tk.StringVar(value="America/New_York")
-    cal_var = tk.StringVar(value=DEFAULT_CALENDAR_ID)
-    days_var = tk.IntVar(value=7)
-    slot_var = tk.IntVar(value=0)
-    out_var = tk.StringVar(value="text")
-    tf_var = tk.StringVar(value="auto")
+    tz_var = tk.StringVar(value=config.get("attendee_tz", "America/New_York"))
+    cal_var = tk.StringVar(value=config.get("calendar_id", DEFAULT_CALENDAR_ID))
+    days_var = tk.IntVar(value=config.get("days", 7))
+    slot_var = tk.IntVar(value=config.get("slot_min", 0))
+    out_var = tk.StringVar(value=config.get("output", "text"))
+    tf_var = tk.StringVar(value=config.get("time_format", "auto"))
 
     frm = ttk.Frame(root, padding=12)
     frm.grid(row=0, column=0, sticky="nsew")
@@ -435,6 +475,18 @@ def launch_gui():
         if not tz_name:
             messagebox.showerror("Input Error", "Please enter a valid IANA time zone (e.g., America/New_York).")
             return
+        
+        # Save current settings to config
+        current_config = {
+            "calendar_id": cal_var.get().strip(),
+            "attendee_tz": tz_name,
+            "days": days_var.get(),
+            "slot_min": slot_var.get(),
+            "output": out_var.get(),
+            "time_format": tf_var.get()
+        }
+        save_config(current_config)
+        
         result = compute_availability(
             attendee_tz_name=tz_name,
             calendar_id=cal_var.get().strip(),
@@ -493,13 +545,21 @@ def launch_gui():
 
 
 def main():
+    # Load configuration for defaults
+    config = load_config()
+    
     parser = argparse.ArgumentParser(description="List open time slots translated to attendee's time zone.")
     parser.add_argument("--attendee-tz", help="IANA time zone for attendee (e.g., 'America/New_York').")
-    parser.add_argument("--calendar-id", default=DEFAULT_CALENDAR_ID, help="Calendar ID (default Henry@imatest.com).")
-    parser.add_argument("--days", type=int, default=7, help="Look-ahead window in days (default 7).")
-    parser.add_argument("--slot-min", type=int, default=0, help="If >0, emit discrete slots of this many minutes.")
-    parser.add_argument("--output", choices=["text", "json"], default="text", help="Output format (default text).")
-    parser.add_argument("--time-format", choices=["auto", "12", "24"], default="auto", help="Time format preference (default auto).")
+    parser.add_argument("--calendar-id", default=config.get("calendar_id", DEFAULT_CALENDAR_ID), 
+                       help=f"Calendar ID (default from config: {config.get('calendar_id', DEFAULT_CALENDAR_ID)}).")
+    parser.add_argument("--days", type=int, default=config.get("days", 7), 
+                       help=f"Look-ahead window in days (default {config.get('days', 7)}).")
+    parser.add_argument("--slot-min", type=int, default=config.get("slot_min", 0), 
+                       help="If >0, emit discrete slots of this many minutes.")
+    parser.add_argument("--output", choices=["text", "json"], default=config.get("output", "text"), 
+                       help=f"Output format (default {config.get('output', 'text')}).")
+    parser.add_argument("--time-format", choices=["auto", "12", "24"], default=config.get("time_format", "auto"), 
+                       help=f"Time format preference (default {config.get('time_format', 'auto')}).")
     parser.add_argument("--now", default=None, help="Override current time (RFC3339) for testing.")
     parser.add_argument("--gui", action="store_true", help="Launch Tkinter GUI.")
     args = parser.parse_args()
@@ -507,6 +567,18 @@ def main():
     if args.gui or not args.attendee_tz:
         launch_gui()
         return
+
+    # Save the used settings back to config (only if not using GUI)
+    if args.attendee_tz:
+        updated_config = {
+            "calendar_id": args.calendar_id,
+            "attendee_tz": args.attendee_tz,
+            "days": args.days,
+            "slot_min": args.slot_min,
+            "output": args.output,
+            "time_format": args.time_format
+        }
+        save_config(updated_config)
 
     result = compute_availability(
         attendee_tz_name=args.attendee_tz,

@@ -9,19 +9,22 @@ This is a **single-file Python application** that finds available time slots on 
 - **`Interval` dataclass**: All time calculations use tz-aware `datetime` objects
 - **Mountain Time bias**: Owner works in `America/Denver` with specific daily schedules
 - **Timezone conversion**: All output converted to attendee's timezone for scheduling
+- **Configuration persistence**: Settings stored in `config.json` and used as defaults
 
 ### Business Logic Layers
 1. **Google Calendar API**: Authentication via `credentials.json` → `token.json` flow
-2. **Schedule constraints**: Hardcoded MT business hours (8:30-17:00, Wed starts 9:30)
-3. **Buffer management**: 15-min pre/post buffers around existing events
-4. **Interval arithmetic**: Merge overlapping busy times, subtract from available windows
-5. **Output formatting**: Text (with locale-aware 12/24h) or JSON
+2. **Configuration management**: `config.json` stores calendar ID and user preferences
+3. **Schedule constraints**: Hardcoded MT business hours (8:30-17:00, Wed starts 9:30)
+4. **Buffer management**: 15-min pre/post buffers around existing events
+5. **Interval arithmetic**: Merge overlapping busy times, subtract from available windows
+6. **Output formatting**: Text (with locale-aware 12/24h) or JSON
 
 ### Critical Functions
 - `compute_availability()`: Main business logic, used by both CLI and GUI
 - `clamp_to_day_window()`: Enforces MT business hours and excludes weekends  
 - `subtract_intervals()`: Core algorithm for finding free time between busy blocks
 - `discretize_slots()`: Converts continuous windows to bookable time slots (≥45 min)
+- `load_config()`/`save_config()`: Manages persistent settings in `config.json`
 
 ## Development Workflows
 
@@ -41,6 +44,7 @@ python free_slots.py --gui
 1. Place Google OAuth desktop client credentials as `credentials.json`
 2. First run opens browser for authorization, saves `token.json`
 3. Use `--calendar-id` to test with different calendars
+4. Settings automatically saved to `config.json` for persistence
 
 ### Time Testing
 ```bash
