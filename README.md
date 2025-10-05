@@ -5,7 +5,7 @@ compute open slots on your google calendar
 
 Install dependencies
 ```
-python -m pip install --upgrade google-api-python-client google-auth-httplib2 google-auth-oauthlib
+pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
 ```
 
 Put your Google OAuth desktop client as credentials.json in the same folder as the script.
