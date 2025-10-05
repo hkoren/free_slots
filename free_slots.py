@@ -4,16 +4,16 @@ free_slots.py
 
 Find open time windows on the "Henry@imatest.com" Google Calendar over the next N days,
 excluding: (1) existing events, (2) 15 min before/after each event, (3) times before 08:30 MT
-on Mon/Tue/Thu/Fri, (4) times before 09:30 MT on Wed, and (5) weekends.  Results are
-translated to an attendee's timezone.
+on Mon/Tue/Thu/Fri, (4) times before 09:30 MT on Wed, (5) weekends, and (6) times after 17:00 MT.
+Results are translated to an attendee's timezone.
 
 Usage examples:
+  python free_slots.py --gui
   python free_slots.py --attendee-tz "America/New_York"
   python free_slots.py --attendee-tz "Europe/London" --days 7 --calendar-id "Henry@imatest.com"
-  python free_slots.py --attendee-tz "America/Los_Angeles" --slot-min 30
+  python free_slots.py --attendee-tz "America/Los_Angeles" --slot-min 30 --output json
 
-First time, place your OAuth client file as credentials.json in the same folder. The script will
-create token.json after you authenticate.
+Requires Python 3.9+ and Google Calendar API credentials (credentials.json).
 """
 
 import argparse
@@ -24,12 +24,12 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
 try:
-    # Python 3.9+
-    from zoneinfo import ZoneInfo
+    from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:
     print("ERROR: This script requires Python 3.9+ (zoneinfo).", file=sys.stderr)
     sys.exit(1)
 
+# Google API
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
@@ -37,18 +37,19 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-
-MOUNTAIN_TZ = ZoneInfo("America/Denver")  # Mountain Time (handles DST)
+MOUNTAIN_TZ = ZoneInfo("America/Denver")
 DEFAULT_CALENDAR_ID = "Henry@imatest.com"
+
 
 @dataclass
 class Interval:
-    start: dt.datetime  # timezone-aware
-    end: dt.datetime    # timezone-aware
+    start: dt.datetime  # tz-aware
+    end: dt.datetime    # tz-aware
 
     def __post_init__(self):
         if self.end < self.start:
             raise ValueError("Interval end is before start")
+
 
 def load_credentials() -> Credentials:
     creds = None
@@ -66,22 +67,22 @@ def load_credentials() -> Credentials:
             token.write(creds.to_json())
     return creds
 
+
 def rfc3339(dt_obj: dt.datetime) -> str:
-    # Google API expects RFC3339 with timezone offset
     return dt_obj.isoformat()
+
 
 def parse_google_dt(d: dict, tz_fallback: ZoneInfo) -> Tuple[dt.datetime, bool]:
     """Parse a Google Calendar event start/end dict.
-    Returns (datetime, is_all_day). If 'date' is present, it's an all-day date (no time)."""
+    Returns (datetime, is_all_day)."""
     if "dateTime" in d:
-        # Example: 2025-10-04T10:00:00-06:00
         return dt.datetime.fromisoformat(d["dateTime"]), False
     elif "date" in d:
-        # All-day: interpret as midnight at tz_fallback, spanning whole day in that zone.
         date = dt.date.fromisoformat(d["date"])
         return dt.datetime.combine(date, dt.time(0, 0)).replace(tzinfo=tz_fallback), True
     else:
         raise ValueError("Unknown event time format: " + json.dumps(d))
+
 
 def merge_intervals(intervals: List[Interval]) -> List[Interval]:
     if not intervals:
@@ -91,14 +92,13 @@ def merge_intervals(intervals: List[Interval]) -> List[Interval]:
     for cur in intervals_sorted[1:]:
         last = merged[-1]
         if cur.start <= last.end:
-            # overlap/adjacent
             merged[-1] = Interval(start=last.start, end=max(last.end, cur.end))
         else:
             merged.append(cur)
     return merged
 
+
 def subtract_intervals(whole: Interval, blocks: List[Interval]) -> List[Interval]:
-    """Subtract union of blocks from whole, return free intervals."""
     free = []
     cursor = whole.start
     for b in blocks:
@@ -115,15 +115,14 @@ def subtract_intervals(whole: Interval, blocks: List[Interval]) -> List[Interval
         free.append(Interval(cursor, whole.end))
     return free
 
+
 def clamp_to_day_window(day: dt.date) -> Interval:
-    """Create the allowed window in Mountain Time for the given day:
-       - Exclude weekends entirely
+    """Allowed work window in Mountain Time:
+       - Exclude weekends
        - Earliest start 08:30 MT on Mon/Tue/Thu/Fri; 09:30 MT on Wed
-       - No upper bound specified (open until 23:59:59.999999 of that day)
-    """
+       - Latest end 17:00 MT (avoid times after 5:00pm)"""
     weekday = day.weekday()  # Mon=0 ... Sun=6
     if weekday in (5, 6):  # Sat, Sun
-        # Empty window (start==end) to signal "no availability"
         start = dt.datetime.combine(day, dt.time(0, 0, 0), tzinfo=MOUNTAIN_TZ)
         return Interval(start=start, end=start)
 
@@ -132,9 +131,9 @@ def clamp_to_day_window(day: dt.date) -> Interval:
     else:
         start_local = dt.datetime.combine(day, dt.time(8, 30), tzinfo=MOUNTAIN_TZ)
 
-    # End of day at 23:59:59.999999 local time
-    end_local = dt.datetime.combine(day, dt.time(23, 59, 59, 999999), tzinfo=MOUNTAIN_TZ)
+    end_local = dt.datetime.combine(day, dt.time(17, 0), tzinfo=MOUNTAIN_TZ)
     return Interval(start_local, end_local)
+
 
 def expand_with_buffer(intervals: List[Interval], pre_minutes: int = 15, post_minutes: int = 15) -> List[Interval]:
     expanded = []
@@ -148,20 +147,16 @@ def expand_with_buffer(intervals: List[Interval], pre_minutes: int = 15, post_mi
 def minutes_between(a: dt.datetime, b: dt.datetime) -> int:
     return int((b - a).total_seconds() // 60)
 
+
 def filter_min_duration(intervals: List[Interval], min_minutes: int) -> List[Interval]:
     return [iv for iv in intervals if minutes_between(iv.start, iv.end) >= min_minutes]
 
+
 def uses_24h_by_timezone(tz_name: str) -> bool:
-    """
-    Heuristic for 24-hour clock usage based on IANA timezone region.
-    Defaults to 24h unless the zone is commonly 12h in everyday use.
-    Common 12-hour locales: US/Canada, UK/Ireland, Australia/NZ, Philippines.
-    Users can override via --time-format.
-    """
-    # Explicit 12-hour common locales
-    twelve_hour_prefixes = [
-        "America/",            # US, Canada, LatAm (many use 12h in practice)
-    ]
+    """Heuristic for 24-hour clock usage by IANA zone; override with --time-format.
+    Treat most America/ zones, UK/Ireland, Australia/NZ, and Philippines as 12-hour;
+    others default to 24-hour."""
+    twelve_hour_prefixes = ["America/"]
     twelve_hour_exact = {
         "Europe/London", "Europe/Dublin",
         "Pacific/Auckland", "Pacific/Chatham",
@@ -170,10 +165,11 @@ def uses_24h_by_timezone(tz_name: str) -> bool:
         "Asia/Manila"
     }
     if tz_name in twelve_hour_exact:
-        return False
+        return False  # this set represents 12-hour locales → return False for 24h (so they use 12h)
     if any(tz_name.startswith(p) for p in twelve_hour_prefixes):
         return False
-    return True  # everyone else → 24h
+    return True
+
 
 def ordinal(n: int) -> str:
     if 10 <= n % 100 <= 20:
@@ -182,31 +178,35 @@ def ordinal(n: int) -> str:
         suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"
 
+
 def format_time_range(start: dt.datetime, end: dt.datetime, use_24h: bool) -> str:
     if use_24h:
         s = start.strftime("%H:%M")
         e = end.strftime("%H:%M")
         return f"{s}-{e}"
-    # 12-hour with shared am/pm when possible
     s_ampm = start.strftime("%p").lower()
     e_ampm = end.strftime("%p").lower()
-    s_time = start.strftime("%-I:%M")
-    e_time = end.strftime("%-I:%M")
+    # Use %-I on Unix; on Windows, %#I would be needed—kept simple here
+    try:
+        s_time = start.strftime("%-I:%M")
+        e_time = end.strftime("%-I:%M")
+    except ValueError:
+        s_time = start.strftime("%I:%M").lstrip("0")
+        e_time = end.strftime("%I:%M").lstrip("0")
     if s_ampm == e_ampm:
         return f"{s_time}-{e_time}{s_ampm}"
     else:
         return f"{s_time}{s_ampm}-{e_time}{e_ampm}"
 
+
 def discretize_slots(free_windows: List[Interval], slot_minutes: int, attendee_tz: ZoneInfo) -> List[Interval]:
-    """Turn free windows into fixed-size slots, aligned to the minute (no rounding). Enforces ≥45 minutes."""
+    """Turn free windows into fixed-size slots, aligned to the minute (≥45 min enforced)."""
     out = []
     min_minutes = max(45, slot_minutes)
     slot_delta = dt.timedelta(minutes=min_minutes)
     for w in free_windows:
-        # Work in attendee_tz for slot boundaries
         start_att = w.start.astimezone(attendee_tz)
         end_att = w.end.astimezone(attendee_tz)
-        # Only consider windows with at least min_minutes
         if (end_att - start_att) < slot_delta:
             continue
         cursor = start_att
@@ -214,6 +214,7 @@ def discretize_slots(free_windows: List[Interval], slot_minutes: int, attendee_t
             out.append(Interval(cursor, cursor + slot_delta))
             cursor += slot_delta
     return out
+
 
 def get_events(service, calendar_id: str, time_min: dt.datetime, time_max: dt.datetime) -> List[dict]:
     events = []
@@ -241,7 +242,7 @@ def compute_availability(attendee_tz_name: str,
                          output: str = "text",
                          time_format_pref: str = "auto",
                          now_override: Optional[str] = None) -> str:
-    # --- Begin logic equivalent to main(), but parameterized and returning a string ---
+    # --- Core logic used by CLI and GUI; returns text or JSON string ---
     try:
         attendee_tz = ZoneInfo(attendee_tz_name)
     except Exception as e:
@@ -346,7 +347,12 @@ def compute_availability(attendee_tz_name: str,
         day_dt = dt.datetime.combine(day, dt.time(0,0)).replace(tzinfo=attendee_tz)
         weekday = day_dt.strftime("%A")
         month = day_dt.strftime("%B")
-        day_ordinal = ordinal(day_dt.day)
+        # Ordinal helper
+        dnum = day_dt.day
+        if 10 <= dnum % 100 <= 20:
+            day_ordinal = f"{dnum}th"
+        else:
+            day_ordinal = f"{dnum}{ {1:'st',2:'nd',3:'rd'}.get(dnum%10,'th') }".replace(" ", "")
         ranges = [format_time_range(iv.start.astimezone(attendee_tz), iv.end.astimezone(attendee_tz), use_24h) for iv in day_ivs]
         if ranges:
             lines.append(f"{weekday} {month} {day_ordinal}: " + "; ".join(ranges))
@@ -360,7 +366,6 @@ def launch_gui():
     import tkinter as tk
     from tkinter import ttk, messagebox, filedialog
 
-    # Curated common time zones; combobox is also editable for custom entries.
     COMMON_TZS = sorted([
         "America/Denver","America/Los_Angeles","America/Chicago","America/New_York","America/Phoenix",
         "America/Toronto","America/Vancouver","America/Mexico_City","America/Bogota","America/Sao_Paulo",
@@ -376,7 +381,6 @@ def launch_gui():
     root = tk.Tk()
     root.title("Free Slots Finder")
 
-    # Vars
     tz_var = tk.StringVar(value="America/New_York")
     cal_var = tk.StringVar(value=DEFAULT_CALENDAR_ID)
     days_var = tk.IntVar(value=7)
@@ -384,24 +388,20 @@ def launch_gui():
     out_var = tk.StringVar(value="text")
     tf_var = tk.StringVar(value="auto")
 
-    # Layout
     frm = ttk.Frame(root, padding=12)
     frm.grid(row=0, column=0, sticky="nsew")
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
 
-    # Row 0: Calendar ID
     ttk.Label(frm, text="Calendar ID:").grid(row=0, column=0, sticky="w")
     cal_entry = ttk.Entry(frm, textvariable=cal_var, width=40)
     cal_entry.grid(row=0, column=1, columnspan=2, sticky="ew", padx=6, pady=4)
 
-    # Row 1: Time zone
     ttk.Label(frm, text="Attendee Time Zone:").grid(row=1, column=0, sticky="w")
     tz_combo = ttk.Combobox(frm, textvariable=tz_var, values=COMMON_TZS, width=37)
     tz_combo.grid(row=1, column=1, columnspan=2, sticky="ew", padx=6, pady=4)
-    tz_combo['state'] = 'normal'  # editable for custom TZ
+    tz_combo['state'] = 'normal'
 
-    # Row 2: Days & Slot minutes
     ttk.Label(frm, text="Days ahead:").grid(row=2, column=0, sticky="w")
     days_spin = ttk.Spinbox(frm, from_=1, to=30, textvariable=days_var, width=6)
     days_spin.grid(row=2, column=1, sticky="w", padx=6, pady=4)
@@ -410,7 +410,6 @@ def launch_gui():
     slot_spin = ttk.Spinbox(frm, from_=0, to=240, increment=5, textvariable=slot_var, width=8)
     slot_spin.grid(row=2, column=3, sticky="w", padx=6, pady=4)
 
-    # Row 3: Output & Time format
     ttk.Label(frm, text="Output:").grid(row=3, column=0, sticky="w")
     out_combo = ttk.Combobox(frm, textvariable=out_var, values=["text","json"], width=10, state="readonly")
     out_combo.grid(row=3, column=1, sticky="w", padx=6, pady=4)
@@ -419,12 +418,10 @@ def launch_gui():
     tf_combo = ttk.Combobox(frm, textvariable=tf_var, values=["auto","12","24"], width=8, state="readonly")
     tf_combo.grid(row=3, column=3, sticky="w", padx=6, pady=4)
 
-    # Buttons
     btns = ttk.Frame(frm)
     btns.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(8,4))
-    btns.columnconfigure(0, weight=1)
-    btns.columnconfigure(1, weight=1)
-    btns.columnconfigure(2, weight=1)
+    for i in range(4):
+        btns.columnconfigure(i, weight=1)
 
     def do_auth():
         try:
@@ -461,7 +458,9 @@ def launch_gui():
         if not data:
             messagebox.showwarning("No Data", "Nothing to save.")
             return
-        fpath = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text","*.txt"),("JSON","*.json"),("All files","*.*")])
+        from tkinter import filedialog
+        fpath = filedialog.asksaveasfilename(defaultextension=".txt",
+                                             filetypes=[("Text","*.txt"),("JSON","*.json"),("All files","*.*")])
         if not fpath:
             return
         with open(fpath, "w", encoding="utf-8") as f:
@@ -480,20 +479,17 @@ def launch_gui():
     save_btn = ttk.Button(btns, text="Save Output", command=save_to_file)
     save_btn.grid(row=0, column=3, padx=4)
 
-    # Text output area
     text = tk.Text(frm, width=100, height=30, wrap="word")
     text.grid(row=5, column=0, columnspan=4, sticky="nsew", pady=(8,0))
     scroll = ttk.Scrollbar(frm, orient="vertical", command=text.yview)
     text.configure(yscrollcommand=scroll.set)
     scroll.grid(row=5, column=4, sticky="ns")
 
-    # Expand grid
     for c in range(4):
         frm.columnconfigure(c, weight=1)
     frm.rowconfigure(5, weight=1)
 
     root.mainloop()
-
 
 
 def main():
@@ -508,12 +504,10 @@ def main():
     parser.add_argument("--gui", action="store_true", help="Launch Tkinter GUI.")
     args = parser.parse_args()
 
-    # Launch GUI if requested or if no attendee TZ was provided
     if args.gui or not args.attendee_tz:
         launch_gui()
         return
 
-    # CLI path
     result = compute_availability(
         attendee_tz_name=args.attendee_tz,
         calendar_id=args.calendar_id,
