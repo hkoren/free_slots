@@ -1,7 +1,7 @@
 # Free Slots - AI Coding Instructions
 
 ## Project Overview
-This is a **single-file Python application** that finds available time slots on a Google Calendar, designed specifically for scheduling meetings with timezone conversion. The core logic revolves around **interval mathematics** and **timezone-aware datetime operations**.
+This is a **single-file Python application** (`free_slots.py`) that finds available time slots on a Google Calendar, designed specifically for scheduling meetings with timezone conversion. The core logic revolves around **interval mathematics** and **timezone-aware datetime operations**.
 
 ## Architecture & Key Components
 
@@ -27,6 +27,15 @@ This is a **single-file Python application** that finds available time slots on 
 - `load_config()`/`save_config()`: Manages persistent settings in `config.json`
 
 ## Development Workflows
+
+### Environment Setup
+```bash
+# Install dependencies (no requirements.txt - manual install)
+pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+# Project uses Python 3.9+ (requires zoneinfo module)
+python --version  # Ensure ≥3.9
+```
 
 ### Quick Testing
 ```bash
@@ -67,7 +76,7 @@ python free_slots.py --attendee-tz "America/New_York" --now "2025-10-06T10:00:00
 - **Weekend exclusion**: Sat/Sun return zero-duration intervals
 
 ### Code Organization
-- **Single-file architecture**: All logic in `free_slots.py` (no modules)
+- **Single-file architecture**: All logic in `free_slots.py` (no modules/packages)
 - **Dual interface**: CLI args and Tkinter GUI use same `compute_availability()` core
 - **Error handling**: Returns error strings rather than raising exceptions
 - **Google API**: Paginated event fetching with RFC3339 datetime formatting
@@ -82,5 +91,11 @@ python free_slots.py --attendee-tz "America/New_York" --now "2025-10-06T10:00:00
 - **Calendar events**: Fetches via Google Calendar API v3, handles all-day events
 - **Timezone data**: Relies on system IANA timezone database
 - **Output formats**: Text for humans, JSON for API integration
+
+## Key Files
+- `free_slots.py`: Single application file containing all logic
+- `config.json`: User preferences (auto-generated, gitignored)
+- `credentials.json`: Google OAuth client secrets (gitignored, user-provided)
+- `token.json`: OAuth access tokens (gitignored, auto-generated)
 
 When modifying this code, preserve the Mountain Time business logic and 45-minute minimum duration rules, as these reflect real scheduling constraints.
